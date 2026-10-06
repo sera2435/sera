@@ -263,119 +263,6 @@ def extract_user_id(input_str: str) -> int:
         return int(clean_str)
     return None
 
-# --- MODALS & SELECTS ---
-
-class SubstituteModal(Modal, title="🔄 Substitute Player"):
-    new_player_input = TextInput(label="Tag or ID of New Player", placeholder="e.g. @User or 123456789012345678")
-
-    def __init__(self, target_player_id, parent_view, is_ready_phase=False):
-        super().__init__()
-        self.target_player_id = target_player_id
-        self.parent_view = parent_view
-        self.is_ready_phase = is_ready_phase
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        new_id = extract_user_id(self.new_player_input.value)
-        if not new_id:
-            await interaction.followup.send("❌ **Error:** Invalid user tag or ID!", ephemeral=True)
-            return
-
-        banned, msg = is_user_banned(new_id)
-        if banned:
-            await interaction.followup.send(msg, ephemeral=True)
-            return
-
-        if new_id in active_match_players:
-            await interaction.followup.send("❌ The new player is already in an active match or queue!", ephemeral=True)
-            return
-
-        guild = interaction.guild
-        old_member = guild.get_member(self.target_player_id)
-        new_member = guild.get_member(new_id)
-
-        if not new_member:
-            await interaction.followup.send("❌ The new player was not found in this server!", ephemeral=True)
-            return
-
-        if not new_member.voice or not new_member.voice.channel:
-            await interaction.followup.send(f"⚠️ {new_member.mention} **is not connected to a Voice Channel!** They must join voice first.", ephemeral=True)
-            return
-
-        category = self.parent_view.category
-        if category:
-            for ch in category.channels:
-                if old_member and ch.type == discord.ChannelType.voice:
-                    await ch.set_permissions(old_member, overwrite=None)
-                    await ch.set_permissions(new_member, read_messages=True, send_messages=True, connect=True)
-
-        if self.is_ready_phase:
-            ready_view = self.parent_view
-            ready_view.all_players.remove(self.target_player_id)
-            ready_view.all_players.append(new_id)
-            ready_view.ready_players.discard(self.target_player_id)
-
-            if self.target_player_id == ready_view.t1_leader: ready_view.t1_leader = new_id
-            elif self.target_player_id == ready_view.t2_leader: ready_view.t2_leader = new_id
-
-            if self.target_player_id in ready_view.team_a:
-                ready_view.team_a.remove(self.target_player_id)
-                ready_view.team_a.append(new_id)
-            elif self.target_player_id in ready_view.team_b:
-                ready_view.team_b.remove(self.target_player_id)
-                ready_view.team_b.append(new_id)
-
-            active_match_players.discard(self.target_player_id)
-            active_match_players.add(new_id)
-
-            await interaction.followup.send(f"🔄 **Player Substituted!** {new_member.mention} replaced <@{self.target_player_id}>.", ephemeral=False)
-            await ready_view.text_channel.send(embed=ready_view.update_embed(), view=ready_view)
-        else:
-            match_view = self.parent_view
-            match_view.match_players.remove(self.target_player_id)
-            match_view.match_players.append(new_id)
-            match_view.subbed_in_players.add(new_id)
-
-            if self.target_player_id == match_view.t1_leader: match_view.t1_leader = new_id
-            elif self.target_player_id == match_view.t2_leader: match_view.t2_leader = new_id
-
-            if self.target_player_id in match_view.team_a:
-                match_view.team_a.remove(self.target_player_id)
-                match_view.team_a.append(new_id)
-            elif self.target_player_id in match_view.team_b:
-                match_view.team_b.remove(self.target_player_id)
-                match_view.team_b.append(new_id)
-
-            active_match_players.discard(self.target_player_id)
-            active_match_players.add(new_id)
-
-            await interaction.followup.send(
-                f"🔄 **Player Substituted!** {new_member.mention} replaced <@{self.target_player_id}>.\n"
-                f"ℹ️ <@{self.target_player_id}> and {new_member.mention} will receive **5 PTS** (Half Points) if their team wins.",
-                ephemeral=False
-            )
-
-class SubstituteSelectView(View):
-    def __init__(self, parent_view, leader_team, is_ready_phase=False):
-        super().__init__(timeout=60)
-        self.parent_view = parent_view
-        self.is_ready_phase = is_ready_phase
-
-        options = []
-        guild = parent_view.text_channel.guild
-        for pid in leader_team:
-            member = guild.get_member(pid)
-            label_text = member.display_name if member else f"User {pid}"
-            options.append(discord.SelectOption(label=label_text, value=str(pid), description=f"ID: {pid}"))
-
-        self.select = Select(placeholder="Select player to remove...", options=options)
-        self.select.callback = self.select_callback
-        self.add_item(self.select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        target_id = int(self.select.values[0])
-        await interaction.response.send_modal(SubstituteModal(target_id, self.parent_view, self.is_ready_phase))
-
 # --- AGREEMENT CONFIRMATION VIEW ---
 
 class ResultConfirmationView(View):
@@ -402,15 +289,11 @@ class ResultConfirmationView(View):
         losing_team = self.match_view.team_b if is_team_a_winner else self.match_view.team_a
 
         for pid in winning_team:
-            if pid in self.match_view.subbed_in_players or pid not in self.match_view.initial_players:
-                add_win_to_user(interaction.guild, pid, points_to_add=5)
-            else:
-                add_win_to_user(interaction.guild, pid, points_to_add=10)
+            add_win_to_user(interaction.guild, pid, points_to_add=10)
 
         for pid in losing_team:
             add_loss_to_user(pid)
 
-        # 🚀 ΑΥΤΟΜΑΤΗ ΑΠΟΣΤΟΛΗ ΣΤΟ MATCH-LOGS
         all_screenshots = self.match_view.t1_screenshots + self.match_view.t2_screenshots
         match_id = save_match_history(self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
         await log_match_to_admin_channel(interaction.guild, match_id, self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
@@ -462,7 +345,6 @@ class ResultConfirmationView(View):
             child.disabled = True
         await interaction.message.edit(content="⚠️ **Result Rejected!** Match moved to cancel-match for Admin review. Other match channels auto-deleted.", view=self)
 
-        # 🕒 ΔΙΑΓΡΑΦΗ ΚΑΝΑΛΙΩΝ (5 δευτερόλεπτα τα match channels & 5 λεπτά το cancel-match)
         async def cleanup_disagree_channels():
             await asyncio.sleep(5)
             if category:
@@ -473,7 +355,6 @@ class ResultConfirmationView(View):
                         except Exception as e:
                             print(f"Error deleting match channel: {e}")
 
-            # Περιμένει 5 λεπτά (300 δευτερόλεπτα συνολικά) για διαγραφή του cancel-match
             await asyncio.sleep(295)
             try:
                 if cancel_channel:
@@ -500,7 +381,6 @@ class ActiveMatchView(View):
         self.t2_leader = t2_leader
         self.text_channel = text_channel
         self.initial_players = set(initial_players)
-        self.subbed_in_players = set()
         
         self.room_votes = {}
         self.total_rooms_agreed = None
@@ -716,16 +596,6 @@ class ActiveMatchView(View):
         )
         await self.text_channel.send(content=f"<@{opponent_leader}>", embed=embed, view=confirm_view)
 
-    @discord.ui.button(label="🔄 Substitute Player", style=discord.ButtonStyle.primary)
-    async def btn_substitute(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id not in [self.t1_leader, self.t2_leader]:
-            await interaction.response.send_message("⚠️ Only **Team Leaders** can manage substitutions!", ephemeral=True)
-            return
-
-        leader_team = self.team_a if interaction.user.id in self.team_a else self.team_b
-        select_view = SubstituteSelectView(self, leader_team, is_ready_phase=False)
-        await interaction.response.send_message("Select player to substitute:", view=select_view, ephemeral=True)
-
     @discord.ui.button(label="🚨 Call Admin", style=discord.ButtonStyle.danger)
     async def btn_dispute(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id not in [self.t1_leader, self.t2_leader]:
@@ -907,16 +777,6 @@ class ReadyCheckView(View):
             try: await self.category.delete()
             except: pass
 
-    @discord.ui.button(label="🔄 Substitute Player", style=discord.ButtonStyle.primary)
-    async def btn_substitute_ready(self, interaction: discord.Interaction, button: Button):
-        if interaction.user.id not in [self.t1_leader, self.t2_leader]:
-            await interaction.response.send_message("⚠️️ Only **Team Leaders** can substitute players!", ephemeral=True)
-            return
-
-        leader_team = self.team_a if interaction.user.id in self.team_a else self.team_b
-        select_view = SubstituteSelectView(self, leader_team, is_ready_phase=True)
-        await interaction.response.send_message("Choose which player from your team you want to substitute during Ready Check:", view=select_view, ephemeral=True)
-
 # --- LEADER APPROVAL & MATCHSTART ---
 
 class LeaderApprovalView(View):
@@ -1040,7 +900,7 @@ class MatchmakingView(View):
                 return
 
             if user_id in active_match_players:
-                await interaction.response.send_message("⚠️️ You are currently in an active match or queue!", ephemeral=True)
+                await interaction.response.send_message("⚠ You are currently in an active match or queue!", ephemeral=True)
                 return
 
             data = team_lobbies[mode][team_key]
@@ -1132,9 +992,9 @@ class MatchmakingView(View):
         except Exception as e:
             print(f"Error in cancel: {e}")
 
-# --- 🔄 AUTOMATIC LEADERBOARD TASK (EVERY 10 MINUTES) ---
+# --- 🔄 AUTOMATIC LEADERBOARD TASK (EVERY 1 HOUR) ---
 
-@tasks.loop(minutes=10)
+@tasks.loop(hours=1)
 async def auto_post_leaderboard():
     for guild in bot.guilds:
         lb_channel = discord.utils.get(guild.text_channels, name=LEADERBOARD_CHANNEL_NAME)
@@ -1163,7 +1023,7 @@ async def auto_post_leaderboard():
 
             embed = discord.Embed(
                 title="🏆 CHEMICAL B — AUTOMATIC LEADERBOARD UPDATE",
-                description="Updates automatically every 10 minutes!",
+                description="Updates automatically every 1 hour!",
                 color=discord.Color.gold(),
                 timestamp=datetime.now()
             )
