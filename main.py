@@ -99,10 +99,9 @@ async def startmatch(ctx, match_id: str):
 # ==========================================
 # 5. START SERVER AND BOT
 # ==========================================
-if __name__ == "__main__":
-  # Εκκίνηση του Flask Web Server
-  keep_alive()
+import os
 
-    import os
+if __name__ == "__main__":
+    keep_alive()
     TOKEN = os.getenv('DISCORD_TOKEN')
     bot.run(TOKEN)
