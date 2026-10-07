@@ -1,15 +1,33 @@
-import discord
-from discord.ext import commands, tasks
-from discord.ui import Button, View, Select, Modal, TextInput
-import sqlite3
 import os
+import threading
+import sqlite3
 import asyncio
 import time
 import re
 import traceback
 from datetime import datetime, timedelta
+from flask import Flask
+import discord
+from discord.ext import commands, tasks
+from discord.ui import Button, View, Select, Modal, TextInput
 from dotenv import load_dotenv
 
+# --- 1. FLASK WEB SERVER (Για το Render) ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive and running!"
+
+def run_flask():
+    # Το Render ορίζει αυτόματα τη μεταβλητή PORT
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# Εκκίνηση του Flask server σε ξεχωριστό thread για να μην μπλοκάρει το bot
+threading.Thread(target=run_flask, daemon=True).start()
+
+# --- 2. CONFIGURATION & BOT SETUP ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -34,6 +52,7 @@ DISPUTE_CHANNEL_NAME = "disputes"
 MATCH_LOG_CHANNEL_NAME = "match-logs"
 LEADERBOARD_CHANNEL_NAME = "leaderboard"
 
+# --- 3. DATABASE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -168,18 +187,13 @@ async def update_user_rank_roles(guild: discord.Guild, user_id: int, points: int
             target_rank = rank_name
             break
 
-    try:
-        for rank_name in RANK_ROLES.keys():
-            role = discord.utils.get(guild.roles, name=rank_name)
-            if role:
-                if rank_name == target_rank and role not in member.roles:
-                    await member.add_roles(role)
-                elif rank_name != target_rank and role in member.roles:
-                    await member.remove_roles(role)
-    except discord.Forbidden:
-        print(f"⚠️ Missing Permissions to update roles for user {user_id}")
-    except Exception as e:
-        print(f"Error updating roles: {e}")
+    for rank_name in RANK_ROLES.keys():
+        role = discord.utils.get(guild.roles, name=rank_name)
+        if role:
+            if rank_name == target_rank and role not in member.roles:
+                await member.add_roles(role)
+            elif rank_name != target_rank and role in member.roles:
+                await member.remove_roles(role)
 
 def add_win_to_user(guild: discord.Guild, user_id: int, points_to_add: int = 10):
     try:
@@ -1074,39 +1088,39 @@ class MatchmakingView(View):
             print(f"❌ ERROR in join_team: {e}")
             traceback.print_exc()
 
-    @discord.ui.button(label="🔵 1v1 (Team 1)", style=discord.ButtonStyle.primary, custom_id="mm_1v1_t1")
+    @discord.ui.button(label="🔵 1v1 (Team 1)", style=discord.ButtonStyle.primary)
     async def btn_1v1_t1(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "1vs1", "team1")
 
-    @discord.ui.button(label="🔴 1v1 (Team 2)", style=discord.ButtonStyle.danger, custom_id="mm_1v1_t2")
+    @discord.ui.button(label="🔴 1v1 (Team 2)", style=discord.ButtonStyle.danger)
     async def btn_1v1_t2(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "1vs1", "team2")
 
-    @discord.ui.button(label="🔵 2v2 (Team 1)", style=discord.ButtonStyle.primary, custom_id="mm_2v2_t1")
+    @discord.ui.button(label="🔵 2v2 (Team 1)", style=discord.ButtonStyle.primary)
     async def btn_2v2_t1(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "2vs2", "team1")
 
-    @discord.ui.button(label="🔴 2v2 (Team 2)", style=discord.ButtonStyle.danger, custom_id="mm_2v2_t2")
+    @discord.ui.button(label="🔴 2v2 (Team 2)", style=discord.ButtonStyle.danger)
     async def btn_2v2_t2(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "2vs2", "team2")
 
-    @discord.ui.button(label="🔵 3v3 (Team 1)", style=discord.ButtonStyle.primary, custom_id="mm_3v3_t1")
+    @discord.ui.button(label="🔵 3v3 (Team 1)", style=discord.ButtonStyle.primary)
     async def btn_3v3_t1(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "3vs3", "team1")
 
-    @discord.ui.button(label="🔴 3v3 (Team 2)", style=discord.ButtonStyle.danger, custom_id="mm_3v3_t2")
+    @discord.ui.button(label="🔴 3v3 (Team 2)", style=discord.ButtonStyle.danger)
     async def btn_3v3_t2(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "3vs3", "team2")
 
-    @discord.ui.button(label="🔵 4v4 (Team 1)", style=discord.ButtonStyle.primary, custom_id="mm_4v4_t1")
+    @discord.ui.button(label="🔵 4v4 (Team 1)", style=discord.ButtonStyle.primary)
     async def btn_4v4_t1(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "4vs4", "team1")
 
-    @discord.ui.button(label="🔴 4v4 (Team 2)", style=discord.ButtonStyle.danger, custom_id="mm_4v4_t2")
+    @discord.ui.button(label="🔴 4v4 (Team 2)", style=discord.ButtonStyle.danger)
     async def btn_4v4_t2(self, interaction: discord.Interaction, button: Button):
         await self.join_team(interaction, "4vs4", "team2")
 
-    @discord.ui.button(label="❌ Cancel / Leave", style=discord.ButtonStyle.secondary, custom_id="mm_cancel")
+    @discord.ui.button(label="❌ Cancel / Leave", style=discord.ButtonStyle.secondary)
     async def btn_cancel(self, interaction: discord.Interaction, button: Button):
         try:
             message = interaction.message
@@ -1134,7 +1148,7 @@ class MatchmakingView(View):
         except Exception as e:
             print(f"Error in cancel: {e}")
 
-# --- 🔄 AUTOMATIC LEADERBOARD TASK (EVERY 10 MINUTES) ---
+# --- AUTOMATIC LEADERBOARD TASK (EVERY 10 MINUTES) ---
 
 @tasks.loop(minutes=10)
 async def auto_post_leaderboard():
@@ -1186,7 +1200,6 @@ async def auto_post_leaderboard():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
-    bot.add_view(MatchmakingView())  # Εξασφαλίζει ότι τα κουμπιά δουλεύουν μετά από restart
     if not auto_post_leaderboard.is_running():
         auto_post_leaderboard.start()
 
@@ -1269,7 +1282,8 @@ async def leaderboard(ctx):
     embed.description = lb_text
     await ctx.send(embed=embed)
 
+# --- 4. START DISCORD BOT ---
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("❌ ERROR: DISCORD_TOKEN is missing in .env file!")
+    print("❌ ERROR: DISCORD_TOKEN Environment Variable not found!")
