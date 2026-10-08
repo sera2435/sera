@@ -1,33 +1,15 @@
-import os
-import threading
+import discord
+from discord.ext import commands, tasks
+from discord.ui import Button, View, Select, Modal, TextInput
 import sqlite3
+import os
 import asyncio
 import time
 import re
 import traceback
 from datetime import datetime, timedelta
-from flask import Flask
-import discord
-from discord.ext import commands, tasks
-from discord.ui import Button, View, Select, Modal, TextInput
 from dotenv import load_dotenv
 
-# --- 1. FLASK WEB SERVER (Για το Render) ---
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot is alive and running!"
-
-def run_flask():
-    # Το Render ορίζει αυτόματα τη μεταβλητή PORT
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-# Εκκίνηση του Flask server σε ξεχωριστό thread για να μην μπλοκάρει το bot
-threading.Thread(target=run_flask, daemon=True).start()
-
-# --- 2. CONFIGURATION & BOT SETUP ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -51,8 +33,8 @@ MVP_ROLE_NAME = "👑 MVP of the Week"
 DISPUTE_CHANNEL_NAME = "disputes"
 MATCH_LOG_CHANNEL_NAME = "match-logs"
 LEADERBOARD_CHANNEL_NAME = "leaderboard"
+BETS_LOG_CHANNEL_NAME = "bets-logs"
 
-# --- 3. DATABASE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -142,6 +124,45 @@ async def log_match_to_admin_channel(guild, match_id, mode, t1_leader, t2_leader
     embed.set_footer(text="CHEMICAL B Match History")
 
     await log_channel.send(embed=embed)
+
+async def log_points_to_bets_channel(guild, winning_team, losing_team, mode):
+    bets_channel = discord.utils.get(guild.text_channels, name=BETS_LOG_CHANNEL_NAME)
+    if not bets_channel:
+        print(f"⚠️ Warning: Channel '{BETS_LOG_CHANNEL_NAME}' not found!")
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    win_text = ""
+    for pid in winning_team:
+        cursor.execute("SELECT wins, points FROM stats WHERE user_id = ?", (pid,))
+        row = cursor.fetchone()
+        wins = row[0] if row else 0
+        pts = row[1] if row else 0
+        win_text += f"🟢 <@{pid}> ➔ **+1 Win** | Total Wins: **{wins}** | Points: **{pts}**\n"
+
+    loss_text = ""
+    for pid in losing_team:
+        cursor.execute("SELECT losses, points FROM stats WHERE user_id = ?", (pid,))
+        row = cursor.fetchone()
+        losses = row[0] if row else 0
+        pts = row[1] if row else 0
+        loss_text += f"🔴 <@{pid}> ➔ **+1 Loss** | Total Losses: **{losses}** | Points: **{pts}**\n"
+
+    conn.close()
+
+    embed = discord.Embed(
+        title=f"🎰 BETS LOG — MATCH UPDATED ({mode})",
+        description="Points & Leaderboard Stats updated after match completion!",
+        color=discord.Color.green(),
+        timestamp=datetime.now()
+    )
+    embed.add_field(name="🏆 WINNERS (+PTS)", value=win_text if win_text else "None", inline=False)
+    embed.add_field(name="💀 LOSERS", value=loss_text if loss_text else "None", inline=False)
+    embed.set_footer(text="CHEMICAL B Betting System")
+
+    await bets_channel.send(embed=embed)
 
 def is_user_banned(user_id: int) -> tuple[bool, str]:
     conn = sqlite3.connect(DB_PATH)
@@ -429,9 +450,11 @@ class ResultConfirmationView(View):
         for pid in losing_team:
             add_loss_to_user(pid)
 
+        # 🚀 ΑΥΤΟΜΑΤΗ ΑΠΟΣТОΛΗ ΣΤΟ MATCH-LOGS ΚΑΙ BETS-LOGS
         all_screenshots = self.match_view.t1_screenshots + self.match_view.t2_screenshots
         match_id = save_match_history(self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
         await log_match_to_admin_channel(interaction.guild, match_id, self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
+        await log_points_to_bets_channel(interaction.guild, winning_team, losing_team, self.match_view.mode)
 
         msg_text = f"🎉 **RESULT CONFIRMED!** Both Leaders agreed. **{self.claimed_winner_label}** is official winner!"
         await interaction.message.edit(content=msg_text, view=self)
@@ -1148,9 +1171,9 @@ class MatchmakingView(View):
         except Exception as e:
             print(f"Error in cancel: {e}")
 
-# --- AUTOMATIC LEADERBOARD TASK (EVERY 10 MINUTES) ---
+# --- 🔄 AUTOMATIC LEADERBOARD TASK (EVERY 1 HOUR) ---
 
-@tasks.loop(minutes=10)
+@tasks.loop(hours=1)
 async def auto_post_leaderboard():
     for guild in bot.guilds:
         lb_channel = discord.utils.get(guild.text_channels, name=LEADERBOARD_CHANNEL_NAME)
@@ -1179,7 +1202,7 @@ async def auto_post_leaderboard():
 
             embed = discord.Embed(
                 title="🏆 CHEMICAL B — AUTOMATIC LEADERBOARD UPDATE",
-                description="Updates automatically every 10 minutes!",
+                description="Updates automatically every hour!",
                 color=discord.Color.gold(),
                 timestamp=datetime.now()
             )
@@ -1188,7 +1211,7 @@ async def auto_post_leaderboard():
                 medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**#{idx}**"
                 lb_text += f"{medal} <@{uid}> — **{wins}** Wins | **{pts}** PTS | **{wr}%** WR ({losses} L)\n"
 
-            embed.add_field(name="📊 Top Players", value=lb_text, inline=False)
+            embed.add_field(name="📊 Top 10 Players (By Wins)", value=lb_text, inline=False)
             embed.set_footer(text="CHEMICAL B Ranking System")
 
             await lb_channel.send(embed=embed)
@@ -1239,17 +1262,58 @@ async def matchinfo(ctx, match_id: int):
 
     await ctx.send(embed=embed)
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setwin(ctx, leader: discord.Member):
-    add_win_to_user(ctx.guild, leader.id, 10)
-    await ctx.send(f"✅ Admin manually set WIN for {leader.mention}.")
+# --- SINGLE PLAYER & TEAM WIN/LOSS ADMIN COMMANDS ---
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def setloss(ctx, leader: discord.Member):
-    add_loss_to_user(leader.id)
-    await ctx.send(f"💀 Admin manually set LOSS for {leader.mention}.")
+async def addwin(ctx, player: discord.Member):
+    add_win_to_user(ctx.guild, player.id, 10)
+    await ctx.send(f"✅ Admin manually added WIN for {player.mention}.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def addloss(ctx, player: discord.Member):
+    add_loss_to_user(player.id)
+    await ctx.send(f"💀 Admin manually added LOSS for {player.mention}.")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def teamwin(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        await ctx.send("❌ Usage: `!teamwin @player1 @player2 ...`")
+        return
+    for member in members:
+        add_win_to_user(ctx.guild, member.id, 10)
+    mentions = ", ".join([m.mention for m in members])
+    await ctx.send(f"✅ Admin manually set WIN for team: {mentions}")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def teamloss(ctx, members: commands.Greedy[discord.Member]):
+    if not members:
+        await ctx.send("❌ Usage: `!teamloss @player1 @player2 ...`")
+        return
+    for member in members:
+        add_loss_to_user(member.id)
+    mentions = ", ".join([m.mention for m in members])
+    await ctx.send(f"💀 Admin manually set LOSS for team: {mentions}")
+
+# --- RESET LEADERBOARD COMMAND ---
+
+@bot.command(name="reset_leaderboard", aliases=["resetleaderboard"])
+@commands.has_permissions(administrator=True)
+async def reset_leaderboard(ctx):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM stats")
+        conn.commit()
+        conn.close()
+        await ctx.send("🔄 **Leaderboard Reset Successful!** All player stats and points have been cleared.")
+    except Exception as e:
+        await ctx.send(f"❌ Error resetting leaderboard: {e}")
+
+# --- LEADERBOARD COMMAND ---
 
 @bot.command()
 async def leaderboard(ctx):
@@ -1282,8 +1346,4 @@ async def leaderboard(ctx):
     embed.description = lb_text
     await ctx.send(embed=embed)
 
-# --- 4. START DISCORD BOT ---
-if TOKEN:
-    bot.run(TOKEN)
-else:
-    print("❌ ERROR: DISCORD_TOKEN Environment Variable not found!")
+bot.run(TOKEN)
