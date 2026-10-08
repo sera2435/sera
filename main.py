@@ -9,7 +9,25 @@ import re
 import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 
+# --- KEEP ALIVE WEB SERVER ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# --- BOT CONFIGURATION ---
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -450,7 +468,6 @@ class ResultConfirmationView(View):
         for pid in losing_team:
             add_loss_to_user(pid)
 
-        # 🚀 ΑΥΤΟΜΑΤΗ ΑΠΟΣТОΛΗ ΣΤΟ MATCH-LOGS ΚΑΙ BETS-LOGS
         all_screenshots = self.match_view.t1_screenshots + self.match_view.t2_screenshots
         match_id = save_match_history(self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
         await log_match_to_admin_channel(interaction.guild, match_id, self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
@@ -1346,4 +1363,6 @@ async def leaderboard(ctx):
     embed.description = lb_text
     await ctx.send(embed=embed)
 
+# --- START KEEP ALIVE SERVER & BOT ---
+keep_alive()
 bot.run(TOKEN)
