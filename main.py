@@ -47,11 +47,13 @@ RANK_ROLES = {
     "Diamond": (301, 500),
     "Grandmaster": (501, 999999)
 }
-MVP_ROLE_NAME = "👑 MVP of the Week"
+
+# --- CHANNEL CONFIGURATION (BY ID) ---
+BETS_LOG_CHANNEL_ID = 1556665242778472458
+LEADERBOARD_CHANNEL_ID = 1556078438543007876
+
 DISPUTE_CHANNEL_NAME = "disputes"
 MATCH_LOG_CHANNEL_NAME = "match-logs"
-LEADERBOARD_CHANNEL_NAME = "leaderboard"
-BETS_LOG_CHANNEL_NAME = "bets-logs"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -121,7 +123,6 @@ def save_match_history(mode, t1_leader, t2_leader, team_a, team_b, winner_team, 
 async def log_match_to_admin_channel(guild, match_id, mode, t1_leader, t2_leader, team_a, team_b, winner_team, screenshots):
     log_channel = discord.utils.get(guild.text_channels, name=MATCH_LOG_CHANNEL_NAME)
     if not log_channel:
-        print(f"⚠️ Warning: Channel '{MATCH_LOG_CHANNEL_NAME}' not found!")
         return
 
     t1_mentions = ", ".join([f"<@{p}>" for p in team_a])
@@ -143,42 +144,63 @@ async def log_match_to_admin_channel(guild, match_id, mode, t1_leader, t2_leader
 
     await log_channel.send(embed=embed)
 
-async def log_points_to_bets_channel(guild, winning_team, losing_team, mode):
-    bets_channel = discord.utils.get(guild.text_channels, name=BETS_LOG_CHANNEL_NAME)
+async def log_points_to_bets_channel(guild, winning_team, losing_team, mode, status="COMPLETED", reason=None):
+    bets_channel = bot.get_channel(BETS_LOG_CHANNEL_ID)
     if not bets_channel:
-        print(f"⚠️ Warning: Channel '{BETS_LOG_CHANNEL_NAME}' not found!")
+        print(f"⚠️ Warning: Channel ID '{BETS_LOG_CHANNEL_ID}' not found!")
         return
 
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    if status == "COMPLETED":
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
 
-    win_text = ""
-    for pid in winning_team:
-        cursor.execute("SELECT wins, points FROM stats WHERE user_id = ?", (pid,))
-        row = cursor.fetchone()
-        wins = row[0] if row else 0
-        pts = row[1] if row else 0
-        win_text += f"🟢 <@{pid}> ➔ **+1 Win** | Total Wins: **{wins}** | Points: **{pts}**\n"
+        win_text = ""
+        for pid in winning_team:
+            cursor.execute("SELECT wins, points FROM stats WHERE user_id = ?", (pid,))
+            row = cursor.fetchone()
+            wins = row[0] if row else 0
+            pts = row[1] if row else 0
+            win_text += f"🟢 <@{pid}> ➔ **+1 Win** | Wins: **{wins}** | Points: **{pts}**\n"
 
-    loss_text = ""
-    for pid in losing_team:
-        cursor.execute("SELECT losses, points FROM stats WHERE user_id = ?", (pid,))
-        row = cursor.fetchone()
-        losses = row[0] if row else 0
-        pts = row[1] if row else 0
-        loss_text += f"🔴 <@{pid}> ➔ **+1 Loss** | Total Losses: **{losses}** | Points: **{pts}**\n"
+        loss_text = ""
+        for pid in losing_team:
+            cursor.execute("SELECT losses, points FROM stats WHERE user_id = ?", (pid,))
+            row = cursor.fetchone()
+            losses = row[0] if row else 0
+            pts = row[1] if row else 0
+            loss_text += f"🔴 <@{pid}> ➔ **+1 Loss** | Losses: **{losses}** | Points: **{pts}**\n"
 
-    conn.close()
+        conn.close()
 
-    embed = discord.Embed(
-        title=f"🎰 BETS LOG — MATCH UPDATED ({mode})",
-        description="Points & Leaderboard Stats updated after match completion!",
-        color=discord.Color.green(),
-        timestamp=datetime.now()
-    )
-    embed.add_field(name="🏆 WINNERS (+PTS)", value=win_text if win_text else "None", inline=False)
-    embed.add_field(name="💀 LOSERS", value=loss_text if loss_text else "None", inline=False)
-    embed.set_footer(text="CHEMICAL B Betting System")
+        embed = discord.Embed(
+            title=f"🎰 BET LOG — MATCH FINISHED ({mode})",
+            description="Match outcome confirmed and points updated successfully!",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="🏆 WINNERS (+PTS)", value=win_text if win_text else "None", inline=False)
+        embed.add_field(name="💀 LOSERS", value=loss_text if loss_text else "None", inline=False)
+        embed.set_footer(text="CHEMICAL B Betting System")
+
+    elif status == "DISPUTED":
+        all_players_str = ", ".join([f"<@{p}>" for p in winning_team + losing_team])
+        embed = discord.Embed(
+            title=f"⚠️ BET LOG — MATCH DISPUTED ({mode})",
+            description=f"🚨 **Result was rejected by opponent leader!**\n**Reason:** {reason}\n**Players:** {all_players_str}",
+            color=discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        embed.set_footer(text="CHEMICAL B Dispute Log")
+
+    elif status == "CANCELLED":
+        all_players_str = ", ".join([f"<@{p}>" for p in winning_team + losing_team])
+        embed = discord.Embed(
+            title=f"❌ BET LOG — MATCH CANCELLED ({mode})",
+            description=f" Match was cancelled during Ready Check or due to timeout.\n**Players:** {all_players_str}",
+            color=discord.Color.dark_gray(),
+            timestamp=datetime.now()
+        )
+        embed.set_footer(text="CHEMICAL B Cancellation Log")
 
     await bets_channel.send(embed=embed)
 
@@ -471,7 +493,7 @@ class ResultConfirmationView(View):
         all_screenshots = self.match_view.t1_screenshots + self.match_view.t2_screenshots
         match_id = save_match_history(self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
         await log_match_to_admin_channel(interaction.guild, match_id, self.match_view.mode, self.match_view.t1_leader, self.match_view.t2_leader, self.match_view.team_a, self.match_view.team_b, self.claimed_winner_label, all_screenshots)
-        await log_points_to_bets_channel(interaction.guild, winning_team, losing_team, self.match_view.mode)
+        await log_points_to_bets_channel(interaction.guild, winning_team, losing_team, self.match_view.mode, status="COMPLETED")
 
         msg_text = f"🎉 **RESULT CONFIRMED!** Both Leaders agreed. **{self.claimed_winner_label}** is official winner!"
         await interaction.message.edit(content=msg_text, view=self)
@@ -486,6 +508,9 @@ class ResultConfirmationView(View):
         await interaction.response.defer()
         guild = interaction.guild
         category = self.match_view.category
+
+        # Log Dispute to Bets Log Channel
+        await log_points_to_bets_channel(guild, self.match_view.team_a, self.match_view.team_b, self.match_view.mode, status="DISPUTED", reason=f"Rejected by <@{self.opponent_leader_id}>")
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
@@ -890,6 +915,9 @@ class ReadyCheckView(View):
 
         for child in self.children: child.disabled = True
 
+        # Log cancellation to Bets Channel
+        await log_points_to_bets_channel(self.text_channel.guild, self.team_a, self.team_b, self.mode, status="CANCELLED")
+
         try:
             await self.text_channel.send("⏰ **Match Cancelled:** Timer expired! Unready players received a penalty strike.")
         except:
@@ -951,6 +979,9 @@ class ReadyCheckView(View):
         self.stop()
         for pid in self.all_players:
             active_match_players.discard(pid)
+
+        # Log cancellation to Bets Channel
+        await log_points_to_bets_channel(interaction.guild, self.team_a, self.team_b, self.mode, status="CANCELLED")
 
         for child in self.children: child.disabled = True
         await interaction.message.edit(content=f"❌ **Match Cancelled:** {interaction.user.mention} clicked Not Ready.", view=self)
@@ -1188,52 +1219,52 @@ class MatchmakingView(View):
         except Exception as e:
             print(f"Error in cancel: {e}")
 
-# --- 🔄 AUTOMATIC LEADERBOARD TASK (EVERY 1 HOUR) ---
+# --- AUTOMATIC LEADERBOARD TASK (EVERY 1 HOUR BY ID) ---
 
 @tasks.loop(hours=1)
 async def auto_post_leaderboard():
-    for guild in bot.guilds:
-        lb_channel = discord.utils.get(guild.text_channels, name=LEADERBOARD_CHANNEL_NAME)
-        if not lb_channel:
-            continue
+    lb_channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not lb_channel:
+        print(f"⚠️ Warning: Leaderboard channel ID '{LEADERBOARD_CHANNEL_ID}' not found!")
+        return
 
-        try:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT user_id, wins, losses, points,
-                       CASE 
-                           WHEN (wins + losses) = 0 THEN 0.0
-                           ELSE ROUND((wins * 100.0) / (wins + losses), 1)
-                       END as win_rate
-                FROM stats
-                WHERE (wins + losses) >= 1
-                ORDER BY wins DESC, points DESC, win_rate DESC
-                LIMIT 10
-            """)
-            top_players = cursor.fetchall()
-            conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, wins, losses, points,
+                   CASE 
+                       WHEN (wins + losses) = 0 THEN 0.0
+                       ELSE ROUND((wins * 100.0) / (wins + losses), 1)
+                   END as win_rate
+            FROM stats
+            WHERE (wins + losses) >= 1
+            ORDER BY wins DESC, points DESC, win_rate DESC
+            LIMIT 10
+        """)
+        top_players = cursor.fetchall()
+        conn.close()
 
-            if not top_players:
-                continue
+        if not top_players:
+            return
 
-            embed = discord.Embed(
-                title="🏆 CHEMICAL B — AUTOMATIC LEADERBOARD UPDATE",
-                description="Updates automatically every hour!",
-                color=discord.Color.gold(),
-                timestamp=datetime.now()
-            )
-            lb_text = ""
-            for idx, (uid, wins, losses, pts, wr) in enumerate(top_players, 1):
-                medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**#{idx}**"
-                lb_text += f"{medal} <@{uid}> — **{wins}** Wins | **{pts}** PTS | **{wr}%** WR ({losses} L)\n"
+        embed = discord.Embed(
+            title="🏆 CHEMICAL B — AUTOMATIC LEADERBOARD UPDATE",
+            description="Updates automatically every hour!",
+            color=discord.Color.gold(),
+            timestamp=datetime.now()
+        )
+        lb_text = ""
+        for idx, (uid, wins, losses, pts, wr) in enumerate(top_players, 1):
+            medal = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"**#{idx}**"
+            lb_text += f"{medal} <@{uid}> — **{wins}** Wins | **{pts}** PTS | **{wr}%** WR ({losses} L)\n"
 
-            embed.add_field(name="📊 Top 10 Players (By Wins)", value=lb_text, inline=False)
-            embed.set_footer(text="CHEMICAL B Ranking System")
+        embed.add_field(name="📊 Top 10 Players (By Wins)", value=lb_text, inline=False)
+        embed.set_footer(text="CHEMICAL B Ranking System")
 
-            await lb_channel.send(embed=embed)
-        except Exception as e:
-            print(f"Error sending auto leaderboard: {e}")
+        await lb_channel.send(embed=embed)
+    except Exception as e:
+        print(f"Error sending auto leaderboard: {e}")
 
 # --- BOT EVENTS & COMMANDS ---
 
